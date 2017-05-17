@@ -10,9 +10,11 @@ namespace plt = matplotlibcpp;
 
 using CppAD::AD;
 
+double polyeval(Eigen::VectorXd coeffs, double x);
+
 // TODO: Set N and dt
-size_t N = ? ;
-double dt = ? ;
+size_t N = 24 ;
+double dt = 0.1 ;
 
 // This value assumes the model presented in the classroom is used.
 //
@@ -82,10 +84,35 @@ class FG_eval {
     // The rest of the constraints
     for (int i = 0; i < N - 1; i++) {
       AD<double> x1 = vars[x_start + i + 1];
+      AD<double> y1 = vars[y_start + i + 1];
+      AD<double> v1 = vars[v_start + i + 1];
+      AD<double> psi1 = vars[psi_start + i + 1];
+      AD<double> cte1 = vars[cte_start + i + 1];
+      AD<double> epsi1 = vars[epsi_start + i + 1];
 
       AD<double> x0 = vars[x_start + i];
-      AD<double> psi0 = vars[psi_start + i];
+      AD<double> y0 = vars[y_start + i];
       AD<double> v0 = vars[v_start + i];
+      AD<double> psi0 = vars[psi_start + i];
+      AD<double> cte0 = vars[cte_start + i];
+      AD<double> epsi0 = vars[epsi_start + i];
+
+
+
+      AD<double> delta = vars[delta_start + i];
+      AD<double> a = vars[a_start + i];
+
+
+
+      AD<double> cte0diff = coeffs[0] + coeffs[1] * x0 - ref_cte;
+
+
+
+
+      // Epsi - differential????
+      AD<double> epsi0diff = vars[epsi_start + i] - CppAD::atan(coeffs[1]);
+
+
 
       // Here's `x` to get you started.
       // The idea here is to constraint this value to be 0.
@@ -96,6 +123,26 @@ class FG_eval {
 
       // TODO: Setup the rest of the model constraints
       fg[2 + x_start + i] = x1 - (x0 + v0 * CppAD::cos(psi0) * dt);
+      fg[2 + y_start + i] = y1 - (y0 + v0 * CppAD::sin(psi0) * dt);
+      fg[2 + psi_start + i] = psi1 - (psi0 + v0 * delta * dt / Lf);
+      fg[2 + v_start + i] = v1 - (v0 + a * dt);
+
+      fg[2 + cte_start + i] = cte1 - (cte0diff + v0 * CppAD::sin(epsi0) * dt);
+      fg[2 + epsi_start + i] = epsi1 - (epsi0diff + v0 * delta * dt / Lf);
+
+
+      fg[0] += (cte0 - ref_cte) * (cte0 - ref_cte);
+      fg[0] += (epsi0 - ref_epsi) * (epsi0 - ref_epsi);
+      fg[0] += (v0 - ref_v) * (v0 - ref_v);
+
+      fg[0] += delta * delta;
+      fg[0] += a * a;
+
+      fg[0] += dt * dt;
+
+      std::cout << "c = " << fg[0] << std::endl;
+
+      // TODO: cte, epsi, cost
     }
   }
 };
@@ -266,7 +313,7 @@ int main() {
   ptsy << -1, -1;
 
   // TODO: fit a polynomial to the above x and y coordinates
-  auto coeffs = ? ;
+  auto coeffs = polyfit(ptsx, ptsy, 1);
 
   // NOTE: free feel to play around with these
   double x = -1;
@@ -274,9 +321,9 @@ int main() {
   double psi = 0;
   double v = 10;
   // TODO: calculate the cross track error
-  double cte = ? ;
+  double cte = polyeval(coeffs, x) - y;
   // TODO: calculate the orientation error
-  double epsi = ? ;
+  double epsi = 0 - atan(coeffs[1]);
 
   Eigen::VectorXd state(6);
   state << x, y, psi, v, cte, epsi;
