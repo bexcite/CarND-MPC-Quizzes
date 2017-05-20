@@ -5,6 +5,81 @@
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "matplotlibcpp.h"
+#include <opencv2/opencv.hpp>
+
+double deg2rad(double deg) { return deg * M_PI / 180; };
+double rad2deg(double rad) { return rad * 180 / M_PI; };
+
+class RoadCanvas {
+public:
+  RoadCanvas(int canvasWidth, int canvasHeight, double worldStartX, double worldStartY, double worldLength, double worldWidth):
+          canvasWidth(canvasWidth),
+          canvasHeight(canvasHeight),
+          worldStartX(worldStartX),
+          worldStartY(worldStartY),
+          worldWidth(worldWidth),
+          worldLength(worldLength),
+          vWidth(10),
+          vLength(20),
+          span(5) {
+    canvas = cv::Mat::zeros(canvasHeight, canvasWidth, CV_8UC3);
+
+    if (worldLength/canvasHeight > worldWidth/canvasWidth) {
+      double newWorldWidth = canvasWidth * worldLength/canvasHeight;
+      std::cout << "newWorldWidth = " << newWorldWidth << std::endl;
+      this->worldStartY = worldStartY - (newWorldWidth - worldWidth) / 2;
+      this->worldWidth = newWorldWidth;
+    }
+  };
+
+  void drawVehicle(double x, double y, double psi) {
+    cv::Scalar white = cv::Scalar(255.0, 255.0, 255.0, 0);
+    cv::Scalar green = cv::Scalar(50.0, 255.0, 50.0, 0);
+
+    // create mask
+    cv::Mat mask = cv::Mat::zeros(canvas.size(), CV_8UC3);
+
+    cv::Point screenCoords = worldToScreen(x, y);
+
+    int centerX = screenCoords.x;
+    int centerY = screenCoords.y;
+
+    // draw on mask
+    cv::rectangle(mask,
+                  cv::Point(centerX - vWidth/2, centerY + vLength/2),
+                  cv::Point(centerX + vWidth/2, centerY - vLength/2),
+                  white);
+    cv::arrowedLine(mask, cv::Point(centerX, centerY + vLength/2 - 2), cv::Point(centerX, centerY - vLength/2 + 2), cv::Scalar(0, 255.0, 0, 0),
+                    2, 8, 0, 0.6);
+
+
+    // rotate mask
+    cv::Mat rotation = cv::getRotationMatrix2D(cv::Point(centerX, centerY), rad2deg(psi), 1);
+    std::cout << "rotation = " << rotation << std::endl;
+
+    cv::warpAffine(mask, mask, rotation, mask.size());
+
+
+    cv::addWeighted(canvas, 1, mask, 1, 0, canvas);
+  }
+
+  cv::Mat getCanvas() { return canvas; }
+
+  cv::Point worldToScreen(double x, double y) {
+    double screenY = canvasHeight - span - (x - worldStartX) * canvasHeight / worldLength;
+    double screenX = canvasWidth - (y - worldStartY) * canvasWidth / worldWidth;
+    return cv::Point(screenX, screenY);
+  }
+
+private:
+  cv::Mat canvas;
+  int canvasWidth;
+  int canvasHeight;
+  double worldStartX, worldStartY;
+  double worldWidth, worldLength;
+
+  int vWidth, vLength, span;
+};
 
 namespace plt = matplotlibcpp;
 
@@ -13,8 +88,8 @@ using CppAD::AD;
 double polyeval(Eigen::VectorXd coeffs, double x);
 
 // TODO: Set N and dt
-size_t N = 24 ;
-double dt = 0.1 ;
+size_t N = 25 ;
+double dt = 0.05 ;
 
 // This value assumes the model presented in the classroom is used.
 //
@@ -47,7 +122,7 @@ size_t delta_start = epsi_start + N;
 size_t a_start = delta_start + N - 1;
 
 class FG_eval {
- public:
+public:
   Eigen::VectorXd coeffs;
   // Coefficients of the fitted polynomial.
   FG_eval(Eigen::VectorXd coeffs) { this->coeffs = coeffs; }
@@ -63,6 +138,27 @@ class FG_eval {
     // Reference State Cost
     // TODO: Define the cost related the reference state and
     // any anything you think may be beneficial.
+
+    // The part of the cost based on the reference state.
+    for (int i = 0; i < N; i++) {
+      fg[0] += CppAD::pow(vars[cte_start + i] - ref_cte, 2);
+      fg[0] += CppAD::pow(vars[epsi_start + i] - ref_epsi, 2);
+      fg[0] += CppAD::pow(vars[v_start + i] - ref_v, 2);
+    }
+
+    // Minimize the use of actuators.
+    for (int i = 0; i < N - 1; i++) {
+      fg[0] += CppAD::pow(vars[delta_start + i], 2);
+      fg[0] += CppAD::pow(vars[a_start + i], 2);
+    }
+
+    // Minimize the value gap between sequential actuations.
+    for (int i = 0; i < N - 2; i++) {
+      fg[0] += CppAD::pow(vars[delta_start + i + 1] - vars[delta_start + i], 2);
+      fg[0] += CppAD::pow(vars[a_start + i + 1] - vars[a_start + i], 2);
+    }
+
+//    std::cout << "fg0 = " << fg[0] << std::endl;
 
     //
     // Setup Constraints
@@ -104,13 +200,13 @@ class FG_eval {
 
 
 
-      AD<double> cte0diff = coeffs[0] + coeffs[1] * x0 - ref_cte;
+      AD<double> cte0diff = coeffs[0] + coeffs[1] * x0 - y0;
 
 
 
 
       // Epsi - differential????
-      AD<double> epsi0diff = vars[epsi_start + i] - CppAD::atan(coeffs[1]);
+      AD<double> epsi0diff = psi0 - CppAD::atan(coeffs[1]);
 
 
 
@@ -124,23 +220,23 @@ class FG_eval {
       // TODO: Setup the rest of the model constraints
       fg[2 + x_start + i] = x1 - (x0 + v0 * CppAD::cos(psi0) * dt);
       fg[2 + y_start + i] = y1 - (y0 + v0 * CppAD::sin(psi0) * dt);
-      fg[2 + psi_start + i] = psi1 - (psi0 + v0 * delta * dt / Lf);
+      fg[2 + psi_start + i] = psi1 - (psi0 + v0 * delta / Lf * dt);
       fg[2 + v_start + i] = v1 - (v0 + a * dt);
 
       fg[2 + cte_start + i] = cte1 - (cte0diff + v0 * CppAD::sin(epsi0) * dt);
       fg[2 + epsi_start + i] = epsi1 - (epsi0diff + v0 * delta * dt / Lf);
 
 
-      fg[0] += (cte0 - ref_cte) * (cte0 - ref_cte);
-      fg[0] += (epsi0 - ref_epsi) * (epsi0 - ref_epsi);
-      fg[0] += (v0 - ref_v) * (v0 - ref_v);
+//      fg[0] += (cte0 - ref_cte) * (cte0 - ref_cte);
+//      fg[0] += (epsi0 - ref_epsi) * (epsi0 - ref_epsi);
+//      fg[0] += (v0 - ref_v) * (v0 - ref_v);
+//
+//      fg[0] += delta * delta;
+//      fg[0] += a * a;
+//
+//      fg[0] += dt * dt;
 
-      fg[0] += delta * delta;
-      fg[0] += a * a;
-
-      fg[0] += dt * dt;
-
-      std::cout << "c = " << fg[0] << std::endl;
+      //std::cout << "c = " << fg[0] << std::endl;
 
       // TODO: cte, epsi, cost
     }
@@ -244,13 +340,15 @@ vector<double> MPC::Solve(Eigen::VectorXd x0, Eigen::VectorXd coeffs) {
   options += "Sparse  true        reverse\n";
   options += "Numeric max_cpu_time          0.05\n";
 
+  //std::cout << vars << std::endl;
+
   // place to return solution
   CppAD::ipopt::solve_result<Dvector> solution;
 
   // solve the problem
   CppAD::ipopt::solve<Dvector, FG_eval>(
-      options, vars, vars_lowerbound, vars_upperbound, constraints_lowerbound,
-      constraints_upperbound, fg_eval, solution);
+          options, vars, vars_lowerbound, vars_upperbound, constraints_lowerbound,
+          constraints_upperbound, fg_eval, solution);
 
   //
   // Check some of the solution values
@@ -304,29 +402,41 @@ Eigen::VectorXd polyfit(Eigen::VectorXd xvals, Eigen::VectorXd yvals,
 }
 
 int main() {
+
+  std::cout << "My Program!" << std::endl;
+
   MPC mpc;
   int iters = 50;
 
   Eigen::VectorXd ptsx(2);
   Eigen::VectorXd ptsy(2);
   ptsx << -100, 100;
-  ptsy << -1, -1;
+  ptsy << 0, 0;
 
   // TODO: fit a polynomial to the above x and y coordinates
   auto coeffs = polyfit(ptsx, ptsy, 1);
 
   // NOTE: free feel to play around with these
   double x = -1;
-  double y = 10;
-  double psi = 0;
-  double v = 10;
+  double y = -10;
+  double psi = -3.0;
+  double v = 30;
   // TODO: calculate the cross track error
   double cte = polyeval(coeffs, x) - y;
   // TODO: calculate the orientation error
-  double epsi = 0 - atan(coeffs[1]);
+  double epsi = -atan(coeffs[1]);
 
   Eigen::VectorXd state(6);
   state << x, y, psi, v, cte, epsi;
+
+  std::cout << "Initial state: " << state << std::endl;
+
+  RoadCanvas canvas(800, 800, -5, -20, 100, 40);
+  namedWindow("Display Image", cv::WINDOW_NORMAL);
+
+  canvas.drawVehicle(state[0], state[1], state[2]);
+  cv::imshow("Display Image", canvas.getCanvas());
+  cv::waitKey(0);
 
   std::vector<double> x_vals = {state[0]};
   std::vector<double> y_vals = {state[1]};
@@ -353,6 +463,11 @@ int main() {
     a_vals.push_back(vars[7]);
 
     state << vars[0], vars[1], vars[2], vars[3], vars[4], vars[5];
+    std::cout << state << std::endl;
+
+    canvas.drawVehicle(state[0], state[1], state[2]);
+    cv::imshow("Display Image", canvas.getCanvas());
+    cv::waitKey(0);
   }
 
   // Plot values
